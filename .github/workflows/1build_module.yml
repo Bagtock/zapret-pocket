@@ -1,0 +1,112 @@
+name: Build Zapret Pocket
+run-name: ${{ startsWith(github.ref, 'refs/tags/') && format('Release {0}', github.ref_name) || 'Manual Build' }}
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'   # любые теги вида v1.0.0, v2.3.1 и т.д.
+
+jobs:
+  build-zapret:
+    name: zapret for Android aarch64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: bol-van/zapret
+          path: zapret
+
+      - name: Build aarch64
+        env:
+          ABI: arm64-v8a
+          TARGET: aarch64-linux-android
+        run: |
+          DEPS_DIR=$GITHUB_WORKSPACE/deps
+          export TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          export API=21
+          export CC="$TOOLCHAIN/bin/clang --target=$TARGET$API"
+          export AR=$TOOLCHAIN/bin/llvm-ar
+          export AS=$CC
+          export LD=$TOOLCHAIN/bin/ld
+          export RANLIB=$TOOLCHAIN/bin/llvm-ranlib
+          export STRIP=$TOOLCHAIN/bin/llvm-strip
+          export PKG_CONFIG_PATH=$DEPS_DIR/lib/pkgconfig
+
+          # Скачиваем и патчим библиотеки
+          curl -sSL https://www.netfilter.org/pub/libnfnetlink/libnfnetlink-1.0.2.tar.bz2 | tar -xj
+          curl -sSL https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 | tar -xj
+          curl -sSL https://www.netfilter.org/pub/libnetfilter_queue/libnetfilter_queue-1.0.5.tar.bz2 | tar -xj
+          curl -sSL https://raw.githubusercontent.com/bol-van/zapret/master/.github/workflows/libnetfilter_queue-android.patch | patch -p1 -d libnetfilter_queue-1.0.5
+
+          # Сборка библиотек
+          for i in libmnl libnfnetlink libnetfilter_queue; do
+            (
+              cd $i-*
+              CFLAGS="-Os -flto=auto -Wno-implicit-function-declaration" \
+              ./configure --prefix= --host=$TARGET --enable-static --disable-shared --disable-dependency-tracking
+              make install -j$(nproc) DESTDIR=$DEPS_DIR
+            )
+            sed -i "s|^prefix=.*|prefix=$DEPS_DIR|g" $DEPS_DIR/lib/pkgconfig/$i.pc
+          done
+
+          # Сборка zapret
+          CFLAGS="-DZAPRET_GH_VER=${{ github.ref_name }} -DZAPRET_GH_HASH=${{ github.sha }} -I$DEPS_DIR/include" \
+          LDFLAGS="-L$DEPS_DIR/lib" \
+          make -C zapret android -j$(nproc)
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfqws-arm64-v8a
+          path: zapret/binaries/my/nfqws
+          if-no-files-found: error
+
+  build-module:
+    name: Zapret Pocket Module
+    runs-on: ubuntu-latest
+    needs: build-zapret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download nfqws aarch64
+        uses: actions/download-artifact@v4
+        with:
+          name: nfqws-arm64-v8a
+          path: module
+      - run: mv module/nfqws module/zapret/nfqws-aarch64
+
+      - name: Build Module ZIP
+        run: |
+          version=${{ github.ref_name }}
+          version_code=$(echo "${version}" | sed 's/[^0-9]//g')
+
+          mkdir -p module/system/app module/ipset module/list module/dnscrypt
+
+          echo "id=zapret" > module/module.prop
+          echo "name=zapret" >> module/module.prop
+          echo "version=${version}" >> module/module.prop
+          echo "versionCode=${version_code}" >> module/module.prop
+          echo "author=sevcator, t.me/nigga2011, GAME-OVER-op, bol-van, DNSCrypt, ImMALWARE, Fenrir-0xFF, Flowseal, LeonMskRu" >> module/module.prop
+          echo "description=⚡ DPI bypass on Android with additional features" >> module/module.prop
+          echo "updateJson=https://raw.githubusercontent.com/${{ github.repository }}/main/update.json" >> module/module.prop
+
+          7z a zapret-pocket.zip ./module/*
+
+      - name: Upload Module ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: zapret-pocket
+          path: zapret-pocket.zip
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: zapret-pocket.zip
+          draft: false
