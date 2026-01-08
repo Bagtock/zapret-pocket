@@ -1,15 +1,15 @@
 name: Build Zapret Pocket
-run-name: ${{ github.ref_name || 'Manual Build' }}
+run-name: ${{ startsWith(github.ref, 'refs/tags/') && format('Release {0}', github.ref_name) || null }}
 
 on:
   workflow_dispatch:
   push:
     tags:
       - '[0-9]+*'
-
-jobs:
+      
+jobs:          
   build-zapret:
-    name: Build zapret for Android ${{ matrix.abi }}
+    name: zapret for Android ${{ matrix.abi }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -24,12 +24,13 @@ jobs:
             target: x86_64-linux-android
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           repository: bol-van/zapret
           path: zapret
 
-      - name: Build zapret
+      - name: Build
         env:
           ABI: ${{ matrix.abi }}
           TARGET: ${{ matrix.target }}
@@ -45,17 +46,18 @@ jobs:
           export STRIP=$TOOLCHAIN/bin/llvm-strip
           export PKG_CONFIG_PATH=$DEPS_DIR/lib/pkgconfig
 
-          # Build dependencies
-          curl -sSL https://www.netfilter.org/pub/libnfnetlink/libnfnetlink-1.0.2.tar.bz2 | tar -xj
-          curl -sSL https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 | tar -xj
-          curl -sSL https://www.netfilter.org/pub/libnetfilter_queue/libnetfilter_queue-1.0.5.tar.bz2 | tar -xj
-          curl -sSL https://raw.githubusercontent.com/bol-van/zapret/master/.github/workflows/libnetfilter_queue-android.patch | patch -p1 -d libnetfilter_queue-1.0.5
+            curl -sSL https://www.netfilter.org/pub/libnfnetlink/libnfnetlink-1.0.2.tar.bz2 | tar -xj
+            curl -sSL https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 | tar -xj
+            curl -sSL https://www.netfilter.org/pub/libnetfilter_queue/libnetfilter_queue-1.0.5.tar.bz2 | tar -xj
+            curl -sSL https://raw.githubusercontent.com/bol-van/zapret/master/.github/workflows/libnetfilter_queue-android.patch | patch -p1 -d libnetfilter_queue-1.0.5
 
           for i in libmnl libnfnetlink libnetfilter_queue; do
             (
               cd $i-*
+
               CFLAGS="-Os -flto=auto -Wno-implicit-function-declaration" \
               ./configure --prefix= --host=$TARGET --enable-static --disable-shared --disable-dependency-tracking
+
               make install -j$(nproc) DESTDIR=$DEPS_DIR
             )
             sed -i "s|^prefix=.*|prefix=$DEPS_DIR|g" $DEPS_DIR/lib/pkgconfig/$i.pc
@@ -65,40 +67,45 @@ jobs:
           LDFLAGS="-L$DEPS_DIR/lib" \
           make -C zapret android -j$(nproc)
 
-      - name: Upload zapret binaries
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nfqws-${{ matrix.abi }}
           path: zapret/binaries/my/nfqws
+          if-no-files-found: error
 
   build-dnscrypt:
-    name: Build dnscrypt-proxy
+    name: dnscrypt-proxy for Android (All)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           repository: DNSCrypt/dnscrypt-proxy
           path: dnscrypt-proxy
 
-      - uses: actions/setup-go@v5
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
           go-version: 1
           check-latest: true
+        id: go
 
       - name: Build All
         run: |
           cd dnscrypt-proxy/dnscrypt-proxy
           curl -sSL "https://raw.githubusercontent.com/${{ github.repository }}/refs/heads/main/.github/modified-ci-build.sh" | bash
-          mkdir -p binaries
+          mkdir binaries
           mv dnscrypt-proxy-* binaries/
-
-      - uses: actions/upload-artifact@v4
+          
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: dnscrypt-proxy
           path: dnscrypt-proxy/dnscrypt-proxy/binaries/*
 
   build-curl:
-    name: Build curl for Android
+    name: curl for Android ${{ matrix.abi }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -116,7 +123,7 @@ jobs:
             target: x86_64-linux-android
             openssl: android-x86_64
     steps:
-      - name: Build curl
+      - name: Build
         env:
           TARGET: ${{ matrix.target }}
           OPENSSL_TARGET: ${{ matrix.openssl }}
@@ -128,6 +135,7 @@ jobs:
           export CC=${TARGET}${API}-clang
           export CXX=${TARGET}${API}-clang++
           export AR=llvm-ar
+          export AS=$CC
           export LD=ld.lld
           export RANLIB=llvm-ranlib
           export STRIP=llvm-strip
@@ -145,84 +153,118 @@ jobs:
           $STRIP src/curl
           mv src/curl ../curl
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
           name: curl-${{ matrix.abi }}
           path: curl
+          if-no-files-found: error
 
   build-module:
-    name: Build Zapret Pocket Module
+    name: Zapret Pocket Module
     runs-on: ubuntu-latest
     needs: [build-zapret, build-dnscrypt, build-curl]
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # Download artifacts from previous jobs
-      - uses: actions/download-artifact@v4
+      - name: Download nfqws armeabi-v7a
+        uses: actions/download-artifact@v4
         with:
           name: nfqws-armeabi-v7a
           path: module
-      - run: mv module/nfqws module/zapret/nfqws-arm
 
-      - uses: actions/download-artifact@v4
+      - name: Rename nfqws to nfqws-arm
+        run: |
+          mv module/nfqws module/zapret/nfqws-arm
+
+      - name: Download nfqws arm64-v8a
+        uses: actions/download-artifact@v4
         with:
           name: nfqws-arm64-v8a
           path: module
-      - run: mv module/nfqws module/zapret/nfqws-aarch64
 
-      - uses: actions/download-artifact@v4
+      - name: Rename nfqws to nfqws-aarch64
+        run: |
+          mv module/nfqws module/zapret/nfqws-aarch64
+
+      - name: Download nfqws x86
+        uses: actions/download-artifact@v4
         with:
           name: nfqws-x86
           path: module
-      - run: mv module/nfqws module/zapret/nfqws-x86
 
-      - uses: actions/download-artifact@v4
+      - name: Rename nfqws to nfqws-x86
+        run: |
+          mv module/nfqws module/zapret/nfqws-x86
+
+      - name: Download nfqws x86_64
+        uses: actions/download-artifact@v4
         with:
           name: nfqws-x86_64
           path: module
-      - run: mv module/nfqws module/zapret/nfqws-x86_64
 
-      # Download curl binaries
-      - uses: actions/download-artifact@v4
+      - name: Rename nfqws to nfqws-x86_64
+        run: |
+          mv module/nfqws module/zapret/nfqws-x86_64
+
+      - name: Download curl armeabi-v7a
+        uses: actions/download-artifact@v4
         with:
           name: curl-armeabi-v7a
           path: module
-      - run: mv module/curl module/curl-arm
 
-      - uses: actions/download-artifact@v4
+      - name: Rename curl to curl-arm
+        run: |
+          mv module/curl module/curl-arm
+
+      - name: Download curl arm64-v8a
+        uses: actions/download-artifact@v4
         with:
           name: curl-arm64-v8a
           path: module
-      - run: mv module/curl module/curl-aarch64
 
-      - uses: actions/download-artifact@v4
+      - name: Rename curl to curl-aarch64
+        run: |
+          mv module/curl module/curl-aarch64
+
+      - name: Download curl x86
+        uses: actions/download-artifact@v4
         with:
           name: curl-x86
           path: module
-      - run: mv module/curl module/curl-x86
 
-      - uses: actions/download-artifact@v4
+      - name: Rename curl to curl-x86
+        run: |
+          mv module/curl module/curl-x86
+
+      - name: Download curl x86_64
+        uses: actions/download-artifact@v4
         with:
           name: curl-x86_64
           path: module
-      - run: mv module/curl module/curl-x86_64
 
-      # Download dnscrypt-proxy
-      - uses: actions/download-artifact@v4
+      - name: Rename curl to curl-x86_64
+        run: |
+          mv module/curl module/curl-x86_64
+
+      - name: Download dnscrypt-proxy
+        uses: actions/download-artifact@v4
         with:
           name: dnscrypt-proxy
           path: module/dnscrypt
 
-      # Build module zip
-      - name: Build zapret-pocket.zip
+      - name: Build Module
         run: |
           version=${{ github.ref_name }}
           version_code=$(echo "${version}" | sed 's/[^0-9]//g')
           echo "version=${version}" >> $GITHUB_ENV
           echo "versionCode=${version_code}" >> $GITHUB_ENV
-
+          echo version=${version}
+          echo versionCode=${version_code}
+          
           sudo apt update
-          sudo apt install -y p7zip-full jq
+          sudo apt install -y p7zip-full
           cd module
 
           mkdir -p system/app ipset list
@@ -244,34 +286,19 @@ jobs:
           cd ..
           7z a zapret-pocket.zip ./module/*
 
+      - name: Set up Git
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          
+      - name: Calculate SHA-256 checksum
+        id: sha256
+        run: echo "SHA256=$(sha256sum zapret-pocket.zip | awk '{ print $1 }')" >> $GITHUB_ENV
+          
       - name: Upload Module Zip
         uses: actions/upload-artifact@v4
         with:
           name: zapret-pocket
           path: zapret-pocket.zip
-          if-no-files-found: error
-
-      # Optional: Upload to GitHub Release
-      - uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          fail_on_unmatched_files: true
-          draft: false
-          files: zapret-pocket.zip
-
-      # Optional: Send to Telegram
-      - name: Send to Telegram
-        run: |
-          curl -X POST \
-            -F document=@"zapret-pocket.zip" \
-            -F chat_id="${TELEGRAM_CHAT_ID}" \
-            -F caption="$(echo -e "🔔 <b>New release:</b> <a href=\"https://github.com/$GITHUB_REPOSITORY/releases/tag/$VERSION\">$VERSION</a>\n🔑 <b>SHA256:</b> $SHA256")" \
-            -F parse_mode=HTML \
-            -F disable_web_page_preview=true \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument?chat_id=${TELEGRAM_CHAT_ID}"
-        env:
-          VERSION: ${{ github.ref_name }}
-          SHA256: ${{ env.SHA256 }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          if-no-files-found: error     
+      
