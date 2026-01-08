@@ -3,9 +3,11 @@ run-name: Release ${{ github.ref_name }}
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'  # любой тег вида v1.0.0
+    inputs:
+      release_tag:
+        description: 'Tag for release'
+        required: true
+        default: 'v2.2.2'
 
 jobs:          
   build-zapret:
