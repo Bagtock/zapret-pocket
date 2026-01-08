@@ -1,11 +1,11 @@
 name: Build Zapret Pocket
-run-name: ${{ startsWith(github.ref, 'refs/tags/') && format('Release {0}', github.ref_name) || 'Manual Build' }}
+run-name: ${{ github.ref_name || 'v0.0.0' }}
 
 on:
   workflow_dispatch:
   push:
     tags:
-      - 'v*'   # любые теги вида v1.0.0, v2.3.1 и т.д.
+      - 'v*'
 
 jobs:
   build-zapret:
@@ -35,13 +35,11 @@ jobs:
           export STRIP=$TOOLCHAIN/bin/llvm-strip
           export PKG_CONFIG_PATH=$DEPS_DIR/lib/pkgconfig
 
-          # Скачиваем и патчим библиотеки
           curl -sSL https://www.netfilter.org/pub/libnfnetlink/libnfnetlink-1.0.2.tar.bz2 | tar -xj
           curl -sSL https://www.netfilter.org/pub/libmnl/libmnl-1.0.5.tar.bz2 | tar -xj
           curl -sSL https://www.netfilter.org/pub/libnetfilter_queue/libnetfilter_queue-1.0.5.tar.bz2 | tar -xj
           curl -sSL https://raw.githubusercontent.com/bol-van/zapret/master/.github/workflows/libnetfilter_queue-android.patch | patch -p1 -d libnetfilter_queue-1.0.5
 
-          # Сборка библиотек
           for i in libmnl libnfnetlink libnetfilter_queue; do
             (
               cd $i-*
@@ -52,7 +50,6 @@ jobs:
             sed -i "s|^prefix=.*|prefix=$DEPS_DIR|g" $DEPS_DIR/lib/pkgconfig/$i.pc
           done
 
-          # Сборка zapret
           CFLAGS="-DZAPRET_GH_VER=${{ github.ref_name }} -DZAPRET_GH_HASH=${{ github.sha }} -I$DEPS_DIR/include" \
           LDFLAGS="-L$DEPS_DIR/lib" \
           make -C zapret android -j$(nproc)
@@ -82,6 +79,10 @@ jobs:
       - name: Build Module ZIP
         run: |
           version=${{ github.ref_name }}
+          # если нет тега, ставим фиктивный
+          if [ -z "$version" ]; then
+            version="v0.0.0"
+          fi
           version_code=$(echo "${version}" | sed 's/[^0-9]//g')
 
           mkdir -p module/system/app module/ipset module/list module/dnscrypt
@@ -104,9 +105,20 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release
+        run: |
+          release_tag=${GITHUB_REF_NAME}
+          if [ -z "$release_tag" ]; then
+            release_tag="v0.0.0"
+          fi
+          echo "Using release tag: $release_tag"
+        shell: bash
+
+      - name: Publish Release
         uses: softprops/action-gh-release@v2
+        if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          tag_name: ${{ github.ref_name || 'v2.2.8' }}
           files: zapret-pocket.zip
           draft: false
